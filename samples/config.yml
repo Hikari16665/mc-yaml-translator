@@ -1,0 +1,22 @@
+# Typical plugin config.yml — mostly data, a few messages
+enabled: true
+language: en_US
+debug: false
+max-homes: 5
+spawn-world: world
+spawn-location: world 0 64 0
+welcome-message: "Welcome to the server, %player%!"
+motd: "&aNow with more dolphins!"
+broadcast-format: "&6[Broadcast] &f{0}"
+storage:
+  type: sqlite
+  file: data/players.db
+  url: "jdbc:mysql://localhost:3306/mc"
+blacklist-materials:
+  - BEDROCK
+  - BARRIER
+  - COMMAND_BLOCK
+allowed-commands:
+  - /spawn
+  - /tpa
+  - /home

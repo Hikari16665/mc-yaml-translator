@@ -1,0 +1,66 @@
+# Example plugin language file — mixed copy and data
+# header comment must be preserved
+
+prefix: "&8[&6MyPlugin&8]&r "
+messages:
+  welcome: "&aWelcome, %player%! Have a nice stay."
+  goodbye: "&eGoodbye, {name}. See you soon."
+  no-permission: "&cYou do not have permission to do that."
+  reload: "&aConfiguration reloaded successfully."
+  balance: "You have {0} coins and %s gems."
+  hover-hint: "<hover:show_text:'Click to open the shop'>Open Shop</hover>"
+  kick: "You were kicked: %reason%"
+  empty: ""
+  color-only: "&c"
+  just-placeholder: "%player%"
+
+gui:
+  title: "Server Shop"
+  size: 54
+  filler:
+    material: BLACK_STAINED_GLASS_PANE
+    name: " "
+  items:
+    0:
+      material: DIAMOND_SWORD
+      name: "&bExcalibur"
+      amount: 1
+      lore:
+        - "&7A legendary blade of the ancients."
+        - "&eDamage: &f+12"
+        - ""
+        - "&aClick to purchase."
+      command: /give %player% diamond_sword 1
+      sound: entity.player.levelup
+      permission: myplugin.shop.excalibur
+    1:
+      material: minecraft:golden_apple
+      name: "&6Mystic Apple"
+      custom_model_data: 401
+      lore:
+        - "Restores your hunger and more."
+
+items:
+  special-sword:
+    id: "myplugin:special_sword"
+    material: NETHERITE_SWORD
+    display-name: "&dSpecial Sword"
+
+commands:
+  spawn:
+    command: /warp spawn
+    description: "Teleport yourself to the spawn point."
+    permission: myplugin.command.spawn
+    aliases:
+      - /hub
+      - /lobby
+
+sounds:
+  success: minecraft:entity.player.levelup
+  fail: block.note_block.bass
+
+database:
+  host: 127.0.0.1
+  port: 3306
+  username: plugin
+  password: secret
