@@ -39,6 +39,43 @@ def test_slot_pool_leaves_no_residue():
     assert ui._overall is None
 
 
+def test_slots_are_reused_after_release(monkeypatch):
+    """tqdm stores fixed positions as negative; releasing must still recycle rows.
+
+    Without this, a long run loses in-flight preview bars after the first
+    wave of keys (every assigned row leaked from the free list).
+    """
+    import mc_yaml_translator.progress as prog
+
+    monkeypatch.setattr(prog, "_term_size", lambda: (80, 10))
+    ui = ProgressUI(total=50, disable=False)
+    with ui:
+        n = ui._slot_count
+        assert n == 7
+        first = []
+        for i in range(n):
+            s = ui.acquire_slot(f"first.{i}")
+            assert s is not None, f"initial acquire {i} failed"
+            assert s.position == i + 1
+            first.append(s)
+        assert ui.acquire_slot("overflow") is None
+        for s in first:
+            # tqdm marks fixed positions as negative; this is the historical bug
+            assert s.bar.pos == -s.position
+            ui.release_slot(s)
+        assert ui._free == list(range(1, n + 1))
+        second = []
+        for i in range(n):
+            s = ui.acquire_slot(f"second.{i}")
+            assert s is not None, f"reuse acquire {i} failed"
+            second.append(s)
+        assert ui.acquire_slot("overflow2") is None
+        for s in second:
+            ui.release_slot(s)
+        assert ui._free == list(range(1, n + 1))
+    assert ui._overall is None
+
+
 @pytest.mark.asyncio
 async def test_progress_text_dump(tmp_path: Path):
     """Run a tiny job and capture tqdm output into a text dump for inspection."""

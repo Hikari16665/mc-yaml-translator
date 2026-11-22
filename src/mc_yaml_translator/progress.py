@@ -34,9 +34,13 @@ def _clip_preview(text: str, width: int) -> str:
 
 
 class KeySlot:
-    def __init__(self, bar: tqdm, path: str, lock: threading.Lock) -> None:
+    def __init__(self, bar: tqdm, path: str, position: int, lock: threading.Lock) -> None:
         self.bar = bar
         self.path = path
+        # Remember the row we assigned. tqdm stores fixed positions as
+        # *negative* integers (see tqdm.std: "mark fixed positions as negative"),
+        # so slot.bar.pos cannot be fed back into the free list as-is.
+        self.position = position
         self._lock = lock
 
     def update_preview(self, streamed: str) -> None:
@@ -100,19 +104,14 @@ class ProgressUI:
             disable=False,
         )
         bar.set_postfix_str("…", refresh=True)
-        return KeySlot(bar, path, self._lock)
+        return KeySlot(bar, path, pos, self._lock)
 
     def release_slot(self, slot: KeySlot | None) -> None:
         if slot is None:
             return
         with self._lock:
-            pos = slot.bar.pos
             slot.bar.close()
-            # tqdm.pos is the position we gave it
-            try:
-                position = int(pos)
-            except Exception:
-                position = -1
+            position = slot.position
             if 1 <= position <= self._slot_count and position not in self._free:
                 self._free.append(position)
                 self._free.sort()

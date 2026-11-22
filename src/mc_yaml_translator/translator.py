@@ -122,14 +122,21 @@ async def translate_item(
         return rec
 
     try:
-        slot = progress.acquire_slot(item.path_str)
         for mi, (model, limiter) in enumerate(zip(config.models, limiters)):
             for attempt in range(config.attempts_per_model):
                 try:
                     async with limiter:
-                        text = await _translate_one_model(
-                            client, model, limiter, item.value, slot
-                        )
+                        # Acquire only while the request is actually in flight so
+                        # waiting keys do not occupy preview rows, and so slots
+                        # stay available for later keys (see ProgressUI reuse).
+                        slot = progress.acquire_slot(item.path_str)
+                        try:
+                            text = await _translate_one_model(
+                                client, model, limiter, item.value, slot
+                            )
+                        finally:
+                            progress.release_slot(slot)
+                            slot = None
                     apply_translation(item, text)
                     progress.tick(True)
                     return None
