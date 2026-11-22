@@ -4,6 +4,10 @@ Minecraft 插件的语言文件、配置里经常全是英文，而且还跟材�
 
 Windows 下是一个单独的 exe。源码是 Python，用 GitHub Actions 打包。
 
+跑起来大概是这样：
+
+![预览](docs/preview.gif)
+
 ## 怎么用
 
 1. 从 [Releases](https://github.com/Hikari16665/mc-yaml-translator/releases) 把 `mc-yaml-translator.exe` 下下来，放进一个文件夹。
