@@ -18,7 +18,7 @@ class RateLimiter:
     2. wait until starting now would not exceed *qps* (min interval 1/qps);
     3. wait until starting now would not exceed *qpm* (sliding 60s window).
 
-    Omitted / zero / "null" limits are treated as unrestricted (a generous
+    Omitted or zero limits are treated as unrestricted (a generous
     internal ceiling is still applied to max_streams so a runaway task set
     cannot open unbounded connections).
     """

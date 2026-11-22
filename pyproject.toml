@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mc-yaml-translator"
-version = "0.1.0"
+version = "0.1.1"
 description = "Translate Minecraft plugin YAML language/config files with a model failover chain."
 readme = "README.md"
 license = "MIT"
@@ -12,7 +12,8 @@ license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "NUOYUAN" }]
 dependencies = [
-  "httpx>=0.27",
+  "openai>=1.40",
+  "pydantic>=2.7",
   "ruamel.yaml>=0.18",
   "tqdm>=4.66",
   "colorama>=0.4.6",
@@ -29,6 +30,9 @@ mc-yaml-translator = "mc_yaml_translator.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+mc_yaml_translator = ["config.toml.example"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

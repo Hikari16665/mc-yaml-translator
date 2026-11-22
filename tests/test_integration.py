@@ -19,7 +19,6 @@ def _cfg(base_url: str, model: str = "test-model", **more):
             "source_language": "en",
             "retries": 1,
             "timeout_seconds": 10,
-            "pause_at_end": False,
             "models": [entry],
         }
     )
@@ -30,7 +29,6 @@ def _cfg_chain(urls_models: list[tuple[str, str]], retries: int = 0):
         {
             "retries": retries,
             "timeout_seconds": 10,
-            "pause_at_end": False,
             "models": [
                 {"base_url": u, "api_key": "sk-test", "model": m, "max_streams": 2}
                 for u, m in urls_models
@@ -71,7 +69,7 @@ async def test_happy_path_preserves_structure_and_placeholders(tmp_path: Path):
     assert "lore: |" in out
     # original not overwritten
     assert "Hello, %player%" in src.read_text(encoding="utf-8")
-    assert result.output.name == "messages.translated.yml"
+    assert result.output.name == "translated_messages.yml"
 
 
 @pytest.mark.asyncio
@@ -111,6 +109,8 @@ async def test_refusal_malformed_and_dropped_placeholders_do_not_enter_output(tm
     assert "查理有苹果" not in text
     assert len(result.failed) == 3
     assert result.failure_log is not None
+    assert result.failure_log.name == "translated_m.failures.txt"
+    assert result.output.name == "translated_m.yml"
     log = result.failure_log.read_text(encoding="utf-8")
     assert "a" in log and "b" in log and "c" in log
 
@@ -176,3 +176,56 @@ async def test_scan_skips_data_in_realistic_sample(sample_dir: Path, tmp_path: P
     assert "entity.player.levelup" in out
     # comments survive
     assert "language file" in out.lower() or "语言" in out or "header" in out.lower() or "#" in out
+
+
+@pytest.mark.asyncio
+async def test_error_categories_on_http_and_refusal(tmp_path: Path):
+    src = tmp_path / "m.yml"
+    src.write_text(
+        'hello: "A full greeting sentence that should fail"\n',
+        encoding="utf-8",
+    )
+
+    def refuse(body, headers):
+        return 200, json.dumps({"status": "refused", "translation": "nope"})
+
+    with MockOpenAI(refuse) as srv:
+        cfg = _cfg(srv.base_url, retries=0)
+        result = await translate_document(src, cfg, disable_progress=True)
+    assert result.failed
+    cats = {a.category.value for a in result.failed[0].attempts}
+    assert "PROVIDER" in cats
+    assert any("拒绝" in a.message or "refused" in a.message.lower() for a in result.failed[0].attempts)
+
+    def unauthorized(body, headers):
+        return 401, {"error": {"message": "bad key"}}
+
+    src2 = tmp_path / "n.yml"
+    src2.write_text('hello: "A full greeting sentence that should fail"\n', encoding="utf-8")
+    with MockOpenAI(unauthorized) as srv:
+        cfg = _cfg(srv.base_url, retries=0)
+        result = await translate_document(src2, cfg, disable_progress=True)
+    assert result.failed
+    assert any(a.category.value == "CLIENT-CONFIG" for a in result.failed[0].attempts)
+
+    def boom(body, headers):
+        return 500, {"error": {"message": "boom"}}
+
+    src3 = tmp_path / "o.yml"
+    src3.write_text('hello: "A full greeting sentence that should fail"\n', encoding="utf-8")
+    with MockOpenAI(boom) as srv:
+        cfg = _cfg(srv.base_url, retries=0)
+        result = await translate_document(src3, cfg, disable_progress=True)
+    assert result.failed
+    assert any(a.category.value == "PROVIDER" for a in result.failed[0].attempts)
+
+
+@pytest.mark.asyncio
+async def test_network_error_category(tmp_path: Path):
+    src = tmp_path / "m.yml"
+    src.write_text('hello: "A full greeting sentence that should fail"\n', encoding="utf-8")
+    # Closed port — connection refused
+    cfg = _cfg("http://127.0.0.1:1/v1", retries=0)
+    result = await translate_document(src, cfg, disable_progress=True)
+    assert result.failed
+    assert any(a.category.value == "NETWORK" for a in result.failed[0].attempts)

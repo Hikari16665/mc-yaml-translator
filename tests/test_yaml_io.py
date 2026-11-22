@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from mc_yaml_translator.config import parse_config
 from mc_yaml_translator.heuristics import should_translate
 from mc_yaml_translator.yaml_io import (
@@ -65,7 +67,7 @@ def test_scan_and_preserve_structure(tmp_path: Path):
     apply_translation(welcome, "&a你好，%player%！")
     lore = next(i for i in items if i.path_str == "messages.lore")
     apply_translation(lore, "一柄利刃。\n好好使用。")
-    dest = tmp_path / "messages.translated.yml"
+    dest = tmp_path / "translated_messages.yml"
     dump_yaml(loaded, dest)
     out = dest.read_text(encoding="utf-8")
     assert out.startswith("# header comment")
@@ -90,8 +92,8 @@ def test_output_path_and_bom(tmp_path: Path):
     items = scan_translatable(loaded.data)
     assert items and items[0].value == "Hello there"
     apply_translation(items[0], "你好呀")
-    dest = output_path_for(src, ".translated")
-    assert dest.name == "lang.translated.yml"
+    dest = output_path_for(src)
+    assert dest.name == "translated_lang.yml"
     dump_yaml(loaded, dest)
     raw = dest.read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf")
@@ -107,3 +109,15 @@ def test_double_quoted_style_kept(tmp_path: Path):
     dump_yaml(loaded, dest)
     text = dest.read_text(encoding="utf-8")
     assert 'title: "你好，玩家"' in text
+
+
+def test_yaml_parse_error(tmp_path: Path):
+    from mc_yaml_translator.yaml_io import YamlParseError, failure_path_for
+
+    src = tmp_path / "bad.yml"
+    src.write_text("foo: [unterminated\n", encoding="utf-8")
+    with pytest.raises(YamlParseError, match="YAML 解析失败"):
+        load_yaml(src)
+    out = output_path_for(tmp_path / "messages.yml")
+    assert out.name == "translated_messages.yml"
+    assert failure_path_for(out).name == "translated_messages.failures.txt"

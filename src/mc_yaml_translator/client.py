@@ -1,41 +1,51 @@
-"""OpenAI-compatible streaming chat client and structured-output parsing."""
+"""OpenAI SDK streaming chat client and pydantic structured-output parsing."""
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import openai
+from openai import AsyncOpenAI
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from mc_yaml_translator.config import AppConfig, ModelConfig
+from mc_yaml_translator.errors import (
+    ErrorCategory,
+    HTTPStatusError,
+    ParseError,
+    RefusalError,
+    TranslateError,
+    classify_error,
+)
+
+# Re-export so existing imports from client continue to work.
+__all__ = [
+    "ErrorCategory",
+    "HTTPStatusError",
+    "ModelClient",
+    "ParseError",
+    "RefusalError",
+    "TranslateError",
+    "TranslationOutput",
+    "build_messages",
+    "classify_error",
+    "parse_structured",
+    "preview_translation",
+]
 
 JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.I)
 
 
-class TranslateError(Exception):
-    """A single attempt failed (network, parse, refusal, placeholders, …)."""
+class TranslationOutput(BaseModel):
+    """Structured LLM response. Refusal or invalid payloads never become a translation."""
 
+    model_config = ConfigDict(extra="ignore")
 
-class RefusalError(TranslateError):
-    def __init__(self, raw: str = "") -> None:
-        self.raw = raw
-        super().__init__("模型拒绝翻译")
-
-
-class ParseError(TranslateError):
-    def __init__(self, raw: str, reason: str = "无法解析结构化输出") -> None:
-        self.raw = raw
-        super().__init__(f"{reason}")
-
-
-class HTTPStatusError(TranslateError):
-    def __init__(self, status: int, body: str = "") -> None:
-        self.status = status
-        self.body = body
-        super().__init__(f"HTTP {status}")
+    status: str = "ok"
+    translation: str | None = None
 
 
 def build_messages(source_text: str, config: AppConfig) -> list[dict[str, str]]:
@@ -106,7 +116,7 @@ def decode_partial_json_string(s: str) -> str:
             if i + 1 >= n:
                 break
             nxt = s[i + 1]
-            mapping = {'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\', '/': '/'}
+            mapping = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
             if nxt in mapping:
                 out.append(mapping[nxt])
                 i += 2
@@ -144,41 +154,82 @@ def parse_structured(text: str) -> str:
     if not raw_obj:
         raise ParseError(text, "响应中没有 JSON 对象")
     try:
-        obj = json.loads(raw_obj)
-    except json.JSONDecodeError as exc:
-        raise ParseError(text, f"JSON 解析失败: {exc}") from exc
-    if not isinstance(obj, dict):
-        raise ParseError(text, "JSON 根不是对象")
+        obj = TranslationOutput.model_validate_json(raw_obj)
+    except ValidationError as exc:
+        raise ParseError(text, f"JSON 结构不符合要求: {exc}") from exc
 
-    status = str(obj.get("status", "") or "").strip().lower()
-    translation = obj.get("translation")
-
+    status = (obj.status or "").strip().lower()
     if status in {"refused", "refuse", "rejected", "error", "denied"}:
         raise RefusalError(raw=text)
-    if translation is None:
+    if obj.translation is None:
         raise ParseError(text, "缺少 translation 字段")
-    if not isinstance(translation, str):
+    if not isinstance(obj.translation, str):
         raise ParseError(text, "translation 不是字符串")
-    if status and status not in {"ok", "success", "translated", "done"}:
+    if status and status not in {"ok", "success", "translated", "done", ""}:
         raise ParseError(text, f"未知 status: {status}")
-    return translation
+    return obj.translation
 
 
-@dataclass
-class StreamResult:
-    text: str
-    used_response_format: bool
+def _wrap_openai(exc: Exception) -> TranslateError:
+    """Map an OpenAI SDK exception to a categorized TranslateError."""
+    if isinstance(exc, TranslateError):
+        return exc
+    status = getattr(exc, "status_code", None)
+    body = ""
+    try:
+        body = str(getattr(exc, "body", "") or exc)
+    except Exception:
+        body = str(exc)
+    if isinstance(status, int) and status >= 400:
+        return HTTPStatusError(status, body)
+    category = classify_error(exc)
+    if category is ErrorCategory.NETWORK:
+        if isinstance(exc, openai.APITimeoutError):
+            return TranslateError(f"请求超时: {exc}", category=category)
+        return TranslateError(f"网络错误: {exc}", category=category)
+    if category is ErrorCategory.CLIENT_CONFIG:
+        return TranslateError(f"客户端配置错误: {exc}", category=category)
+    return TranslateError(f"服务商错误: {exc}", category=category)
 
 
 class ModelClient:
-    def __init__(self, http: httpx.AsyncClient, config: AppConfig) -> None:
-        self.http = http
+    """Thin wrapper around openai.AsyncOpenAI with streaming and format fallback."""
+
+    def __init__(self, config: AppConfig) -> None:
         self.config = config
-        # Remember per base_url+model whether response_format is accepted.
+        self._sdk: dict[str, AsyncOpenAI] = {}
+        self._http: dict[str, httpx.AsyncClient] = {}
         self._response_format_ok: dict[str, bool] = {}
 
     def _flag_key(self, model: ModelConfig) -> str:
         return f"{model.base_url}::{model.model}"
+
+    def _client(self, model: ModelConfig) -> AsyncOpenAI:
+        key = self._flag_key(model)
+        existing = self._sdk.get(key)
+        if existing is not None:
+            return existing
+        kwargs: dict[str, Any] = {
+            "api_key": model.api_key,
+            "base_url": model.base_url.rstrip("/"),
+            "timeout": self.config.timeout_seconds,
+            "max_retries": 0,  # retries / failover are handled by the translator
+        }
+        if not self.config.verify_ssl:
+            http = httpx.AsyncClient(verify=False, follow_redirects=True)
+            self._http[key] = http
+            kwargs["http_client"] = http
+        client = AsyncOpenAI(**kwargs)
+        self._sdk[key] = client
+        return client
+
+    async def aclose(self) -> None:
+        for client in self._sdk.values():
+            await client.close()
+        self._sdk.clear()
+        for http in self._http.values():
+            await http.aclose()
+        self._http.clear()
 
     async def complete(
         self,
@@ -208,78 +259,34 @@ class ModelClient:
         on_delta: Callable[[str], None] | None,
         use_format: bool,
     ) -> str:
-        payload: dict[str, Any] = {
+        client = self._client(model)
+        kwargs: dict[str, Any] = {
             "model": model.model,
             "messages": build_messages(source_text, self.config),
             "temperature": self.config.temperature,
             "stream": True,
         }
         if use_format:
-            payload["response_format"] = {"type": "json_object"}
-
-        headers = {
-            "Authorization": f"Bearer {model.api_key}",
-            "Content-Type": "application/json",
-        }
-        url = model.completions_url()
-        timeout = httpx.Timeout(
-            connect=min(30.0, self.config.timeout_seconds),
-            read=self.config.timeout_seconds,
-            write=self.config.timeout_seconds,
-            pool=self.config.timeout_seconds,
-        )
+            kwargs["response_format"] = {"type": "json_object"}
         try:
-            async with self.http.stream(
-                "POST", url, json=payload, headers=headers, timeout=timeout
-            ) as resp:
-                if resp.status_code == 400 and use_format:
-                    body = (await resp.aread()).decode("utf-8", "replace")
-                    raise HTTPStatusError(400, body)
-                if resp.status_code >= 400:
-                    body = (await resp.aread()).decode("utf-8", "replace")
-                    raise HTTPStatusError(resp.status_code, body)
-                buf = await self._read_sse(resp, on_delta)
-        except httpx.TimeoutException as exc:
-            raise TranslateError(f"请求超时: {exc}") from exc
-        except httpx.HTTPError as exc:
-            raise TranslateError(f"网络错误: {exc}") from exc
-        return buf
-
-    async def _read_sse(
-        self,
-        resp: httpx.Response,
-        on_delta: Callable[[str], None] | None,
-    ) -> str:
-        raw_parts: list[str] = []
-        async for line in resp.aiter_lines():
-            if not line:
-                continue
-            if line.startswith(":") or line.startswith("event:"):
-                continue
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if data == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            delta = _delta_text(chunk)
-            if delta:
-                raw_parts.append(delta)
-                if on_delta:
-                    on_delta("".join(raw_parts))
-        return "".join(raw_parts)
-
-
-def _delta_text(chunk: dict[str, Any]) -> str:
-    try:
-        choices = chunk.get("choices") or []
-        if not choices:
-            return str(chunk.get("content") or "")
-        c0 = choices[0]
-        delta = c0.get("delta") or c0.get("message") or {}
-        return str(delta.get("content") or "")
-    except Exception:
-        return ""
+            stream = await client.chat.completions.create(**kwargs)
+            parts: list[str] = []
+            async for chunk in stream:
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                content = getattr(delta, "content", None) if delta is not None else None
+                if content:
+                    parts.append(content)
+                    if on_delta:
+                        on_delta("".join(parts))
+            return "".join(parts)
+        except HTTPStatusError:
+            raise
+        except openai.BadRequestError as exc:
+            if use_format:
+                raise HTTPStatusError(400, str(exc)) from exc
+            raise _wrap_openai(exc) from exc
+        except (openai.APITimeoutError, openai.APIConnectionError, openai.APIStatusError, openai.APIError) as exc:
+            raise _wrap_openai(exc) from exc

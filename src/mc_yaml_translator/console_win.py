@@ -102,6 +102,6 @@ def pause_if_needed(enabled: bool) -> None:
     if sys.platform != "win32" and not os.environ.get("MCYT_PAUSE"):
         return
     try:
-        input("按 Enter 键退出…")
+        input("发生错误，按 Enter 键退出…")
     except EOFError:
         pass

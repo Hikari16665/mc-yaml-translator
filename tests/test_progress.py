@@ -63,7 +63,6 @@ async def test_progress_text_dump(tmp_path: Path):
             {
                 "retries": 0,
                 "timeout_seconds": 10,
-                "pause_at_end": False,
                 "models": [
                     {
                         "base_url": srv.base_url,

@@ -15,10 +15,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -40,15 +40,19 @@ jobs:
           --collect-all ruamel.yaml
           --collect-all tqdm
           --hidden-import colorama
-          --hidden-import httpx
-          --hidden-import anyio
-          --hidden-import httpcore
-          --hidden-import certifi
+          --hidden-import openai
+          --hidden-import pydantic
+          --hidden-import pydantic_core
           --hidden-import mc_yaml_translator
+          --collect-all openai
+          --collect-all pydantic
+          --collect-all pydantic_core
+          --collect-all jiter
+          --add-data "src/mc_yaml_translator/config.toml.example;mc_yaml_translator"
           src/mc_yaml_translator/__main__.py
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: mc-yaml-translator-windows
           path: |
@@ -59,7 +63,7 @@ jobs:
 
       - name: Attach to GitHub Release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/mc-yaml-translator.exe

@@ -19,6 +19,8 @@ venv/
 config.toml
 
 # Translation outputs
+translated_*.yml
+translated_*.yaml
 *.translated.yml
 *.translated.yaml
 *.failures.txt

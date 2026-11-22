@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import (
     DoubleQuotedScalarString,
@@ -41,13 +42,26 @@ class LoadedYaml:
     raw_bytes: bytes
 
 
+class YamlParseError(ValueError):
+    """The file exists but is not valid YAML."""
+
+
 def load_yaml(path: Path) -> LoadedYaml:
-    raw = path.read_bytes()
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise YamlParseError(f"无法读取文件 {path}: {exc}") from exc
     had_bom = raw.startswith(b"\xef\xbb\xbf")
-    text = raw.decode("utf-8-sig")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise YamlParseError(f"文件不是 UTF-8 文本 {path}: {exc}") from exc
     trailing = text.endswith("\n")
     yaml = make_yaml()
-    data = yaml.load(text) if text.strip() else None
+    try:
+        data = yaml.load(text) if text.strip() else None
+    except YAMLError as exc:
+        raise YamlParseError(f"YAML 解析失败 ({path}): {exc}") from exc
     return LoadedYaml(
         path=path,
         data=data,
@@ -174,10 +188,11 @@ def dump_yaml(loaded: LoadedYaml, dest: Path) -> None:
     dest.write_bytes(data)
 
 
-def output_path_for(source: Path, suffix: str) -> Path:
-    # messages.yml + ".translated" → messages.translated.yml
-    return source.with_name(source.stem + suffix + source.suffix)
+def output_path_for(source: Path, prefix: str = "translated_") -> Path:
+    """messages.yml → translated_messages.yml, in the same directory."""
+    return source.with_name(prefix + source.name)
 
 
 def failure_path_for(output: Path) -> Path:
+    """translated_messages.yml → translated_messages.failures.txt."""
     return output.with_name(output.stem + ".failures.txt")

@@ -8,14 +8,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import httpx
-
 from mc_yaml_translator.client import (
+    ErrorCategory,
     HTTPStatusError,
     ModelClient,
     ParseError,
     RefusalError,
     TranslateError,
+    classify_error,
     parse_structured,
 )
 from mc_yaml_translator.config import AppConfig, ModelConfig
@@ -38,10 +38,24 @@ from mc_yaml_translator.yaml_io import (
 
 
 @dataclass
+class AttemptError:
+    """One model attempt that failed, with a stable error category."""
+
+    model: str
+    attempt: int  # 1-based within that model
+    category: ErrorCategory
+    message: str
+
+    def format(self) -> str:
+        return f"[{self.model} 第{self.attempt}次] {self.category.value}: {self.message}"
+
+
+@dataclass
 class KeyFailure:
     path: str
     original: str
     error: str
+    attempts: list[AttemptError] = field(default_factory=list)
 
 
 @dataclass
@@ -92,8 +106,21 @@ async def translate_item(
     limiters: list[RateLimiter],
     progress: ProgressUI,
 ) -> KeyFailure | None:
-    last_err = "未知错误"
+    attempts: list[AttemptError] = []
     slot: KeySlot | None = None
+
+    def record(model: ModelConfig, attempt: int, exc: BaseException) -> AttemptError:
+        msg = str(exc) or type(exc).__name__
+        # Never leak a model's refusal prose; the exception message is already safe.
+        rec = AttemptError(
+            model=model.model,
+            attempt=attempt,
+            category=classify_error(exc),
+            message=msg,
+        )
+        attempts.append(rec)
+        return rec
+
     try:
         slot = progress.acquire_slot(item.path_str)
         for mi, (model, limiter) in enumerate(zip(config.models, limiters)):
@@ -106,24 +133,20 @@ async def translate_item(
                     apply_translation(item, text)
                     progress.tick(True)
                     return None
-                except RefusalError as exc:
-                    last_err = f"{model.model}: 拒绝翻译"
-                    # Do not leak refusal text into the YAML; just retry/fallback.
-                    _ = exc.raw
-                except ParseError as exc:
-                    last_err = f"{model.model}: {exc}"
                 except HTTPStatusError as exc:
-                    last_err = f"{model.model}: {exc}"
-                    retry_after = None
-                    if exc.status == 429:
-                        retry_after = 1.5
+                    record(model, attempt + 1, exc)
+                    retry_after = 1.5 if exc.status == 429 else None
                     if attempt + 1 < config.attempts_per_model or mi + 1 < len(config.models):
                         await asyncio.sleep(_backoff_seconds(attempt, retry_after))
                     continue
-                except TranslateError as exc:
-                    last_err = f"{model.model}: {exc}"
+                except (RefusalError, ParseError, TranslateError) as exc:
+                    record(model, attempt + 1, exc)
                 except Exception as exc:  # noqa: BLE001 — isolate per key
-                    last_err = f"{model.model}: 意外错误 {type(exc).__name__}: {exc}"
+                    wrapped = TranslateError(
+                        f"意外错误 {type(exc).__name__}: {exc}",
+                        category=classify_error(exc),
+                    )
+                    record(model, attempt + 1, wrapped)
                 if attempt + 1 < config.attempts_per_model:
                     await asyncio.sleep(_backoff_seconds(attempt))
             # Fallback to the next model is not itself a failure.
@@ -131,14 +154,20 @@ async def translate_item(
         progress.release_slot(slot)
 
     progress.tick(False)
-    return KeyFailure(path=item.path_str, original=item.value, error=last_err)
+    summary = attempts[-1].format() if attempts else "未知错误"
+    return KeyFailure(
+        path=item.path_str,
+        original=item.value,
+        error=summary,
+        attempts=attempts,
+    )
 
 
 async def translate_document(
     source: Path,
     config: AppConfig,
     *,
-    http: httpx.AsyncClient | None = None,
+    client: ModelClient | None = None,
     progress_factory: Callable[[int], ProgressUI] | None = None,
     disable_progress: bool = False,
 ) -> FileResult:
@@ -153,10 +182,9 @@ async def translate_document(
             skipped_no_keys=True,
         )
 
-    owns_http = http is None
-    if http is None:
-        http = httpx.AsyncClient(verify=config.verify_ssl, follow_redirects=True)
-    client = ModelClient(http, config)
+    owns_client = client is None
+    if client is None:
+        client = ModelClient(config)
     limiters = [RateLimiter.from_model(m) for m in config.models]
     # Bound total in-flight tasks so we don't spawn tens of thousands at once.
     global_cap = 0
@@ -180,10 +208,10 @@ async def translate_document(
                 for item in items:
                     tg.create_task(work(item))
     finally:
-        if owns_http:
-            await http.aclose()
+        if owns_client:
+            await client.aclose()
 
-    dest = output_path_for(source, config.output_suffix)
+    dest = output_path_for(source, config.output_prefix)
     dump_yaml(loaded, dest)
     fail_log = None
     if failures:
@@ -216,7 +244,12 @@ def _write_failures(
             orig = orig[:400] + "…"
         lines.append(f.path)
         lines.append(f"  original: {orig}")
-        lines.append(f"  error: {f.error}")
+        if f.attempts:
+            lines.append("  attempts:")
+            for att in f.attempts:
+                lines.append(f"    {att.format()}")
+        else:
+            lines.append(f"  error: {f.error}")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 

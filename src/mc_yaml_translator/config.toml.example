@@ -1,0 +1,63 @@
+# mc-yaml-translator 示例配置
+# 第一次双击 exe 时，会把 exe 内置的这份示例写到 exe 同目录的 config.toml。
+# 编辑好后再把 .yml / .yaml 文件拖到 exe 上开始翻译。
+#
+# 目标语言、模型、限流等所有选项都在本文件中配置（不通过命令行设置）。
+# 不要把填好 api_key 的 config.toml 提交到 Git 或发给别人。
+#
+# 全部键翻译成功后窗口会自动关闭；任一键失败、或启动前配置/YAML 校验失败时，
+# 会列出原因并等待按键后再退出。
+
+target_language = "zh_CN"
+source_language = "en"
+
+# 输出文件名：messages.yml → translated_messages.yml（同一目录，不会覆盖原文件）
+# 失败报告：translated_messages.failures.txt
+output_prefix = "translated_"
+
+# 每个模型的额外重试次数（总尝试次数 = 1 + retries）
+retries = 2
+timeout_seconds = 60
+temperature = 0.2
+
+# 附加到系统提示词的说明，例如术语表或风格要求。可留空。
+extra_prompt = ""
+
+# 跳过键路径的正则（匹配完整点分路径，如 messages.gui.items.0.material）
+# 默认已内置 material/sound/permission 等启发式，这里只需补充项目特殊规则。
+skip_key_patterns = []
+
+# SSL 校验。仅在公司代理使用自签证书时才改为 false。
+verify_ssl = true
+
+# ---------------------------------------------------------------------------
+# 模型降级链：按书写顺序尝试。某一个模型失败会降级到下一个；
+# 降级本身不算失败。只有链上所有模型都失败，该键才算翻译失败
+#（保留原文，并写入 translated_<原名>.failures.txt）。
+#
+# 每个模型必填：base_url、api_key、model
+# 可选限流：max_streams、qps、qpm。写 0 表示该项不限制（省略该键同样不限制）。
+# 限流值如果无法解析或类型不兼容，会按 0（不限制）处理，并给出警告。
+#
+# 限流同时生效（同时配置了大于 0 的值就会同时执行），排队时的检查顺序是：
+#   1. max_streams  —— 该模型同时进行的流式请求上限（并发）
+#   2. qps          —— 每秒最多发起多少个请求
+#   3. qpm          —— 每 60 秒滑动窗口内最多发起多少个请求
+# ---------------------------------------------------------------------------
+
+[[models]]
+base_url = "https://api.openai.com/v1"
+api_key = "sk-your-api-key-here"
+model = "gpt-4o-mini"
+qps = 2
+qpm = 60
+max_streams = 4
+
+# 需要 failover 时取消注释并填写第二个模型：
+# [[models]]
+# base_url = "https://api.openai.com/v1"
+# api_key = "sk-your-fallback-key-here"
+# model = "gpt-4o-mini"
+# qps = 0
+# qpm = 0
+# max_streams = 0

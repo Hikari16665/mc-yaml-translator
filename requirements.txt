@@ -1,4 +1,5 @@
-httpx>=0.27
+openai>=1.40
+pydantic>=2.7
 ruamel.yaml>=0.18
 tqdm>=4.66
 colorama>=0.4.6
