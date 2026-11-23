@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -33,6 +34,7 @@ __all__ = [
     "build_messages",
     "classify_error",
     "parse_structured",
+    "StructuredResult",
     "preview_translation",
 ]
 
@@ -46,23 +48,75 @@ class TranslationOutput(BaseModel):
 
     status: str = "ok"
     translation: str | None = None
+    skip: bool = False
+    unchanged: bool = False
 
 
-def build_messages(source_text: str, config: AppConfig) -> list[dict[str, str]]:
+@dataclass
+class StructuredResult:
+    """Parsed model output: a translation, or a source-language skip."""
+
+    translation: str
+    skipped: bool = False
+
+
+_SKIP_STATUSES = frozenset({"skip", "skipped", "unchanged", "same", "keep"})
+_OK_STATUSES = frozenset({"ok", "success", "translated", "done", ""})
+_REFUSE_STATUSES = frozenset({"refused", "refuse", "rejected", "error", "denied"})
+
+
+def build_messages(
+    source_text: str,
+    config: AppConfig,
+    *,
+    target_language: str,
+) -> list[dict[str, str]]:
     extra = config.extra_prompt.strip()
     extra_block = f"\nAdditional instructions from the user:\n{extra}\n" if extra else ""
+    if config.source_is_auto:
+        source_clause = (
+            f"Detect the source language yourself and translate all natural-language text "
+            f"to {target_language}. Do not leave translatable text unchanged, and do not use "
+            f'status "skip".'
+        )
+        skip_rule = (
+            '- Do not use status "skip" or "unchanged". Every natural-language string should be translated.\n'
+        )
+        schema = (
+            'You MUST reply with a single JSON object and nothing else, using exactly this schema:\n'
+            '{"status":"ok","translation":"<translated text>"}\n'
+            "or, if the text is not natural-language content and should not be translated:\n"
+            '{"status":"refused","translation":""}'
+        )
+    else:
+        src = config.source_language
+        source_clause = (
+            f"The expected source language is {src}. Translate the text to {target_language} "
+            f"ONLY if it is in {src} (or is primarily {src}, including when mixed with placeholders, "
+            f"color codes, or MiniMessage tags). If the text is clearly in a different natural language, "
+            f"do not translate it."
+        )
+        skip_rule = (
+            f"- If the text is clearly not in {src}, reply with "
+            '{"status":"skip","translation":""}. This is not a refusal and is not an error.\n'
+        )
+        schema = (
+            'You MUST reply with a single JSON object and nothing else, using exactly this schema:\n'
+            '{"status":"ok","translation":"<translated text>"}\n'
+            "or, if the text is not in the expected source language and must be left unchanged:\n"
+            '{"status":"skip","translation":""}\n'
+            "or, if the text is not natural-language content and should not be translated:\n"
+            '{"status":"refused","translation":""}'
+        )
     system = f"""You are a professional translator for Minecraft plugin YAML language files.
-Translate the user text from {config.source_language} to {config.target_language}.
+{source_clause}
 
-You MUST reply with a single JSON object and nothing else, using exactly this schema:
-{{"status":"ok","translation":"<translated text>"}}
-or, if the text is not natural-language content and should not be translated:
-{{"status":"refused","translation":""}}
+{schema}
 
 Rules:
 - Never put explanations, apologies, or refusals in the translation field.
-- If you cannot or will not translate, use status "refused" and an empty translation.
-- Preserve every placeholder token EXACTLY as given. Tokens look like __MCYT_PH_0__, __MCYT_PH_1__, and so on. Copy them verbatim, do not translate, drop, reorder the numeric id, or add spaces inside them.
+- If you cannot or will not translate (other than a source-language skip), use status "refused" and an empty translation.
+{skip_rule}- Preserve every placeholder token EXACTLY as given. Tokens look like __MCYT_PH_0__, __MCYT_PH_1__, and so on. Copy them verbatim, do not translate, drop, reorder the numeric id, or add spaces inside them.
 - Also preserve any remaining format codes or tags that were not tokenized (MiniMessage tags such as <hover:...>, <click:...>, etc.). You may translate natural-language text that appears inside quotes in those tags, but you must keep the tag name and structure.
 - Do not add or remove placeholders.
 - Keep a concise in-game UI tone; do not wrap the result in quotes unless the original itself was quote-wrapped as part of the text.
@@ -145,10 +199,12 @@ def preview_translation(buffer: str) -> str:
     return decode_partial_json_string(buffer[m.end() :])
 
 
-def parse_structured(text: str) -> str:
-    """Return the translation, or raise RefusalError / ParseError.
+def parse_structured(text: str) -> StructuredResult:
+    """Return a StructuredResult, or raise RefusalError / ParseError.
 
     Refusal or unparsable payloads never become a translation.
+    A source-language skip (status skip/unchanged, or skip/unchanged flags)
+    is returned as skipped=True and is not an error.
     """
     raw_obj = extract_json_object(text)
     if not raw_obj:
@@ -159,15 +215,18 @@ def parse_structured(text: str) -> str:
         raise ParseError(text, f"JSON 结构不符合要求: {exc}") from exc
 
     status = (obj.status or "").strip().lower()
-    if status in {"refused", "refuse", "rejected", "error", "denied"}:
+    flagged_skip = bool(obj.skip) or bool(obj.unchanged)
+    if status in _SKIP_STATUSES or (flagged_skip and status in _OK_STATUSES):
+        return StructuredResult(translation=obj.translation or "", skipped=True)
+    if status in _REFUSE_STATUSES:
         raise RefusalError(raw=text)
     if obj.translation is None:
         raise ParseError(text, "缺少 translation 字段")
     if not isinstance(obj.translation, str):
         raise ParseError(text, "translation 不是字符串")
-    if status and status not in {"ok", "success", "translated", "done", ""}:
+    if status and status not in _OK_STATUSES:
         raise ParseError(text, f"未知 status: {status}")
-    return obj.translation
+    return StructuredResult(translation=obj.translation, skipped=False)
 
 
 def _wrap_openai(exc: Exception) -> TranslateError:
@@ -236,15 +295,20 @@ class ModelClient:
         model: ModelConfig,
         source_text: str,
         on_delta: Callable[[str], None] | None = None,
+        *,
+        target_language: str | None = None,
     ) -> str:
+        target = target_language or self.config.target_languages[0]
         key = self._flag_key(model)
         want_fmt = self._response_format_ok.get(key, True)
         try:
-            raw = await self._stream(model, source_text, on_delta, use_format=want_fmt)
+            raw = await self._stream(model, source_text, on_delta, use_format=want_fmt, target_language=target)
         except HTTPStatusError as exc:
             if want_fmt and exc.status == 400:
                 self._response_format_ok[key] = False
-                raw = await self._stream(model, source_text, on_delta, use_format=False)
+                raw = await self._stream(
+                    model, source_text, on_delta, use_format=False, target_language=target
+                )
             else:
                 raise
         else:
@@ -258,11 +322,13 @@ class ModelClient:
         source_text: str,
         on_delta: Callable[[str], None] | None,
         use_format: bool,
+        *,
+        target_language: str,
     ) -> str:
         client = self._client(model)
         kwargs: dict[str, Any] = {
             "model": model.model,
-            "messages": build_messages(source_text, self.config),
+            "messages": build_messages(source_text, self.config, target_language=target_language),
             "temperature": self.config.temperature,
             "stream": True,
         }

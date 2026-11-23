@@ -11,6 +11,7 @@ from mc_yaml_translator.yaml_io import (
     dump_yaml,
     load_yaml,
     output_path_for,
+    output_paths_for,
     scan_translatable,
 )
 
@@ -121,3 +122,13 @@ def test_yaml_parse_error(tmp_path: Path):
     out = output_path_for(tmp_path / "messages.yml")
     assert out.name == "translated_messages.yml"
     assert failure_path_for(out).name == "translated_messages.failures.txt"
+
+
+def test_output_path_with_language_code():
+    src = Path("dir") / "messages.yml"
+    assert output_path_for(src).name == "translated_messages.yml"
+    assert output_path_for(src, "translated_", "zh_CN").name == "translated_zh_CN_messages.yml"
+    paths = output_paths_for(src, "translated_", ["zh_CN", "ja_JP"], list_mode=True)
+    assert [p.name for p in paths] == ["translated_zh_CN_messages.yml", "translated_ja_JP_messages.yml"]
+    single = output_paths_for(src, "translated_", ["zh_CN"], list_mode=False)
+    assert [p.name for p in single] == ["translated_messages.yml"]

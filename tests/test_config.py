@@ -148,3 +148,64 @@ def test_example_config_from_bundled_file(tmp_path: Path):
     assert cfg.models[0].model
     assert cfg.output_prefix == "translated_"
     assert cfg.target_language == "zh_CN"
+    assert cfg.source_language == "auto"
+    assert cfg.source_is_auto
+    assert cfg.is_multi_target is False
+    assert cfg.target_languages == ["zh_CN"]
+    assert "source_language" in bundled
+    assert "translated_<语言代码>_" in bundled or "translated_<" in bundled
+
+
+def test_source_language_auto_default_and_specific():
+    base = {"models": [{"base_url": "http://x/v1", "api_key": "sk-abc", "model": "m"}]}
+    cfg = parse_config(base)
+    assert cfg.source_language == "auto"
+    assert cfg.source_is_auto
+    cfg = parse_config({**base, "source_language": "EN"})
+    assert cfg.source_language == "EN"
+    assert not cfg.source_is_auto
+    cfg = parse_config({**base, "source_language": "  Auto  "})
+    assert cfg.source_language == "auto"
+    cfg = parse_config({**base, "source_language": ""})
+    assert cfg.source_language == "auto"
+    with pytest.raises(ConfigError, match="语言代码"):
+        parse_config({**base, "source_language": "en/US"})
+    with pytest.raises(ConfigError, match="语言代码"):
+        parse_config({**base, "source_language": "../x"})
+
+
+def test_target_language_string_or_list():
+    base = {"models": [{"base_url": "http://x/v1", "api_key": "sk-abc", "model": "m"}]}
+    cfg = parse_config({**base, "target_language": "ja_JP"})
+    assert cfg.target_language == "ja_JP"
+    assert cfg.is_multi_target is False
+    assert cfg.target_languages == ["ja_JP"]
+
+    cfg = parse_config({**base, "target_language": ["zh_CN", "ja_JP"]})
+    assert cfg.is_multi_target is True
+    assert cfg.target_languages == ["zh_CN", "ja_JP"]
+
+    # a one-item list is still list mode
+    cfg = parse_config({**base, "target_language": ["zh_CN"]})
+    assert cfg.is_multi_target is True
+    assert cfg.target_languages == ["zh_CN"]
+
+
+def test_target_language_dedupe_and_invalid(caplog):
+    base = {"models": [{"base_url": "http://x/v1", "api_key": "sk-abc", "model": "m"}]}
+    import logging
+    with caplog.at_level(logging.WARNING, logger="mc_yaml_translator"):
+        cfg = parse_config({**base, "target_language": ["zh_CN", "zh-CN", "ZH_CN", "ja_JP", ""]})
+    assert cfg.target_languages == ["zh_CN", "ja_JP"]
+    assert "重复" in caplog.text or "空项" in caplog.text
+
+    with pytest.raises(ConfigError, match="不能为空"):
+        parse_config({**base, "target_language": []})
+    with pytest.raises(ConfigError, match="不能为空"):
+        parse_config({**base, "target_language": ["", "  "]})
+    with pytest.raises(ConfigError, match="语言代码|字符串"):
+        parse_config({**base, "target_language": ["zh_CN", 1]})
+    with pytest.raises(ConfigError, match="auto"):
+        parse_config({**base, "target_language": "auto"})
+    with pytest.raises(ConfigError, match="语言代码"):
+        parse_config({**base, "target_language": "zh CN"})

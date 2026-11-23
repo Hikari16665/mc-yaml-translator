@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from io import StringIO
 from dataclasses import dataclass
 import re
 from pathlib import Path
@@ -188,9 +189,52 @@ def dump_yaml(loaded: LoadedYaml, dest: Path) -> None:
     dest.write_bytes(data)
 
 
-def output_path_for(source: Path, prefix: str = "translated_") -> Path:
-    """messages.yml → translated_messages.yml, in the same directory."""
+def clone_loaded(loaded: LoadedYaml) -> LoadedYaml:
+    """Independent copy of a loaded document (styles, comments, order preserved)."""
+    buf = StringIO()
+    loaded.yaml.dump(loaded.data, buf)
+    text = buf.getvalue()
+    yaml = make_yaml()
+    data = yaml.load(text) if text.strip() else None
+    return LoadedYaml(
+        path=loaded.path,
+        data=data,
+        yaml=yaml,
+        had_bom=loaded.had_bom,
+        trailing_newline=loaded.trailing_newline,
+        raw_bytes=loaded.raw_bytes,
+    )
+
+
+def rebind_item(item: TranslatableItem, root: Any) -> TranslatableItem:
+    """Point a scanned item at the same path in another (cloned) tree."""
+    node = root
+    path = item.path
+    if not path:
+        raise KeyError("empty path")
+    for part in path[:-1]:
+        node = node[part]
+    return TranslatableItem(path=item.path, value=item.value, parent=node, key=path[-1])
+
+
+def output_path_for(
+    source: Path,
+    prefix: str = "translated_",
+    lang_code: str | None = None,
+) -> Path:
+    """messages.yml → translated_messages.yml, in the same directory.
+
+    In list-target mode, pass lang_code to get translated_<lang>_messages.yml.
+    """
+    if lang_code:
+        return source.with_name(f"{prefix}{lang_code}_{source.name}")
     return source.with_name(prefix + source.name)
+
+
+def output_paths_for(source: Path, prefix: str, languages: list[str] | None, *, list_mode: bool) -> list[Path]:
+    if list_mode:
+        return [output_path_for(source, prefix, lang) for lang in (languages or [])]
+    return [output_path_for(source, prefix)]
 
 
 def failure_path_for(output: Path) -> Path:

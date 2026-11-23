@@ -23,6 +23,36 @@ logger = logging.getLogger("mc_yaml_translator")
 _EXAMPLE_NAME = "config.toml.example"
 _PLACEHOLDER_KEYS = frozenset({"sk-your-api-key-here", "sk-your-fallback-key-here"})
 
+_LANG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
+_AUTO = "auto"
+
+
+def lang_identity(code: str) -> str:
+    """Case-insensitive key; treat hyphen and underscore as the same."""
+    return code.strip().lower().replace("-", "_")
+
+
+def validate_lang_code(value: Any, *, field: str, allow_auto: bool = False) -> str:
+    """Return a cleaned language code, or raise ValueError."""
+    if value is None:
+        raise ValueError(f"{field} 不能为空。")
+    if not isinstance(value, str):
+        raise ValueError(f"{field} 必须是字符串。")
+    code = value.strip()
+    if not code:
+        raise ValueError(f"{field} 不能为空。")
+    if allow_auto and lang_identity(code) == _AUTO:
+        return _AUTO
+    if not _LANG_RE.fullmatch(code):
+        raise ValueError(
+            f"{field} 不是有效的语言代码: {value!r}。"
+            "请使用如 en、zh_CN、ja-JP 这样的代码，或源语言写 auto。"
+        )
+    if lang_identity(code) == _AUTO and not allow_auto:
+        raise ValueError(f"{field} 不能是 auto（auto 只用于 source_language）。")
+    return code
+
+
 
 def bundled_example_config() -> str:
     """Read the example config packaged with the app (importlib.resources / _MEIPASS)."""
@@ -127,8 +157,8 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
 
     models: list[ModelConfig] = Field(..., min_length=1)
-    target_language: str = "zh_CN"
-    source_language: str = "en"
+    target_language: str | list[str] = "zh_CN"
+    source_language: str = "auto"
     output_prefix: str = "translated_"
     retries: int = 2
     timeout_seconds: float = 60.0
@@ -151,6 +181,41 @@ class AppConfig(BaseModel):
         if not value:
             raise ValueError("output_prefix 不能为空（默认 translated_，以免覆盖原文件）。")
         return value
+
+    @field_validator("source_language", mode="before")
+    @classmethod
+    def _source_lang(cls, value: Any) -> str:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return "auto"
+        return validate_lang_code(value, field="source_language", allow_auto=True)
+
+    @field_validator("target_language", mode="before")
+    @classmethod
+    def _target_langs(cls, value: Any) -> str | list[str]:
+        if value is None or value == "":
+            return "zh_CN"
+        if isinstance(value, str):
+            return validate_lang_code(value, field="target_language")
+        if isinstance(value, (list, tuple)):
+            out: list[str] = []
+            seen: set[str] = set()
+            for item in value:
+                if item is None or (isinstance(item, str) and not item.strip()):
+                    logger.warning("target_language 列表里有空项，已忽略")
+                    continue
+                if not isinstance(item, str):
+                    raise ValueError("target_language 列表的每一项都必须是字符串。")
+                code = validate_lang_code(item, field="target_language")
+                key = lang_identity(code)
+                if key in seen:
+                    logger.warning("重复的目标语言 %s，已忽略", item)
+                    continue
+                seen.add(key)
+                out.append(code)
+            if not out:
+                raise ValueError("target_language 列表不能为空。")
+            return out
+        raise ValueError("target_language 必须是字符串，或由语言代码组成的列表。")
 
     @field_validator("retries")
     @classmethod
@@ -184,6 +249,21 @@ class AppConfig(BaseModel):
     @property
     def attempts_per_model(self) -> int:
         return 1 + max(0, self.retries)
+
+    @property
+    def source_is_auto(self) -> bool:
+        return lang_identity(self.source_language) == _AUTO
+
+    @property
+    def is_multi_target(self) -> bool:
+        """True when target_language was given as a list (including a one-item list)."""
+        return isinstance(self.target_language, list)
+
+    @property
+    def target_languages(self) -> list[str]:
+        if isinstance(self.target_language, list):
+            return list(self.target_language)
+        return [self.target_language]
 
 
 def default_config_path() -> Path:

@@ -13,12 +13,12 @@ Windows 下提供单独的 exe。支持直接使用和命令行调用，并提�
 
 1. 从 [Releases](https://github.com/Hikari16665/mc-yaml-translator/releases) 下载 `mc-yaml-translator.exe`  
 2. 双击一次.exe文件，软件会所在目录生成示例配置文件，内部含有完整注释指导。  
-3. 打开 `config.toml`，完整填写模型的 `base_url`、`api_key`、`model`。目标语言也在这个文件里改（默认 `zh_CN`）。也可以在某个提供商里声明限流和重试，可以添加多个提供商  
+3. 打开 `config.toml`，完整填写模型的 `base_url`、`api_key`、`model`。源语言、目标语言也在这个文件里改（源语言默认 `auto`，目标语言默认 `zh_CN`，目标语言也可以写成列表）。也可以在某个提供商里声明限流和重试，可以添加多个提供商  
 4. 把要翻的 `.yml` / `.yaml` 拖到 exe 上就行，可以多选拖入。  
 
-翻译完成后会生成新的文件，比如 `messages.yml` 会得到 `translated_messages.yml`。新的文件的键顺序和嵌套层级与原始文件一致。  
+翻译完成后会生成新的文件，不会覆盖原来的。目标语言只写了一个字符串时，`messages.yml` 会得到 `translated_messages.yml`。如果写成列表（哪怕只有一项，也按列表模式处理），每种语言各出一份，比如 `translated_zh_CN_messages.yml`、`translated_ja_JP_messages.yml`。新的文件的键顺序和嵌套层级与原始文件一致。  
 
-全部键都翻成功的话，窗口将自动关闭，任意键失败时控制台会停停留并展示错误消息，配置错误或原始文件格式错误不开始翻译，保留控制台，展示错误消息。  
+全部任务都成功的话，窗口将自动关闭，任意任务失败时控制台会停留并展示错误消息（列表模式下会带上语言代码）。因为原文不是你指定的源语言而跳过的，不算失败。配置错误或原始文件格式错误不开始翻译，保留控制台，展示错误消息。  
 
 在终端环境下使用则不会暂停。示例使用方式如下，此处展示两个示例：  
 
@@ -35,7 +35,11 @@ mc-yaml-translator.exe --config D:\path\config.toml --scan messages.yml
 
 ## 配置
 
-模型按 `[[models]]` 提供的顺序使用，依次降级，某个模型不行（重试也用尽了）就换下一个，降级重试成功了也可以。全部走不通就算翻译失败，仍会输出文件，仍然会附 `translated_messages.failures.txt`。  
+源语言 `source_language` 默认是 `auto`，交给模型自己判断，文件里的自然语言都会翻。写成 `en`、`zh_CN` 这种具体代码时，只有这种语言的句子会被翻，已经是别的语言的原文会原样留下，不算失败，摘要里会单独写「跳过原文语言」。  
+
+目标语言 `target_language` 可以是一个字符串，也可以是一个列表。只写 `"zh_CN"` 时，行为和以前一样，进度条还是键名，输出 `translated_messages.yml`。写成列表时（哪怕里面只有一项，也按列表模式来），每个键会再按每种目标语言拆成一个小任务，进度条标题变成 `welcome → ja_JP: …` 这种，总进度按小任务数来数。每种语言各写一个文件，名字是 `translated_<语言代码>_原文件名`。失败报告也按语言分开，里面会写明是哪个语言的小任务出了问题。  
+
+模型按 `[[models]]` 提供的顺序使用，依次降级，某个模型不行（重试也用尽了）就换下一个，降级重试成功了也可以。全部走不通就算翻译失败，仍会输出文件，并附失败报告。单目标时是 `translated_messages.failures.txt`，列表模式则是 `translated_zh_CN_messages.failures.txt` 这种。  
 
 每个模型必填 `base_url`，`api_key`，和`model`。配置检查如果失败，开始翻译前会报 `CLIENT-CONFIG`错误。  
 

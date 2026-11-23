@@ -26,7 +26,7 @@ from mc_yaml_translator.translator import FileResult, scan_file, translate_docum
 from mc_yaml_translator.yaml_io import (
     YamlParseError,
     load_yaml,
-    output_path_for,
+    output_paths_for,
 )
 
 
@@ -84,20 +84,30 @@ def _print_result(result: FileResult, verbose: bool) -> None:
     if result.skipped_no_keys:
         print(f"{result.source}: 没有需要翻译的文本。")
         return
-    print(
-        f"{result.source} → {result.output}: "
-        f"完成 {result.translated}/{result.total}"
-        + (f"，失败 {len(result.failed)}" if result.failed else "")
-    )
-    if result.failure_log:
-        print(f"  失败详情已写入: {result.failure_log}")
+    extra = ""
+    if result.skipped_lang:
+        extra += f"，跳过原文语言 {result.skipped_lang}"
+    if result.failed:
+        extra += f"，失败 {len(result.failed)}"
+    if result.multi_target and result.outputs:
+        print(f"{result.source}: 完成 {result.translated}/{result.total}{extra}")
+        for dest in result.outputs:
+            print(f"  → {dest}")
+    else:
+        print(
+            f"{result.source} → {result.output}: "
+            f"完成 {result.translated}/{result.total}{extra}"
+        )
+    logs = result.failure_logs or ([result.failure_log] if result.failure_log else [])
+    for log in logs:
+        print(f"  失败详情已写入: {log}")
     if verbose:
         for f in result.failed:
-            print(_format_key_failure(f))
+            print(_format_key_failure(f, list_mode=result.multi_target))
 
 
-def _format_key_failure(fail) -> str:
-    lines = [f"  {fail.path}"]
+def _format_key_failure(fail, *, list_mode: bool = False) -> str:
+    lines = [f"  {fail.display_path(list_mode=list_mode)}"]
     if fail.attempts:
         for att in fail.attempts:
             lines.append(f"    {att.format()}")
@@ -112,11 +122,12 @@ def _print_failure_summary(results: list[FileResult]) -> None:
     for result in results:
         if not result.failed:
             continue
-        print(f"文件 {result.source}（{len(result.failed)} 个键失败）：")
+        print(f"文件 {result.source}（{len(result.failed)} 个失败）：")
         for fail in result.failed:
-            print(_format_key_failure(fail))
-        if result.failure_log:
-            print(f"  失败详情已写入: {result.failure_log}")
+            print(_format_key_failure(fail, list_mode=result.multi_target))
+        logs = result.failure_logs or ([result.failure_log] if result.failure_log else [])
+        for log in logs:
+            print(f"  失败详情已写入: {log}")
 
 
 def preflight(files: list[Path], config_path: Path) -> tuple[AppConfig | None, list[str]]:
@@ -141,9 +152,11 @@ def preflight(files: list[Path], config_path: Path) -> tuple[AppConfig | None, l
             errors.append(str(exc))
             continue
         if config is not None:
-            dest = output_path_for(path, config.output_prefix)
-            if dest.resolve() == path.resolve():
-                errors.append(f"输出路径会覆盖原文件，已拒绝: {path}")
+            for dest in output_paths_for(
+                path, config.output_prefix, config.target_languages, list_mode=config.is_multi_target
+            ):
+                if dest.resolve() == path.resolve():
+                    errors.append(f"输出路径会覆盖原文件，已拒绝: {path} → {dest.name}")
     return config, errors
 
 

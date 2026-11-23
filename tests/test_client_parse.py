@@ -11,11 +11,12 @@ from mc_yaml_translator.client import (
 
 
 def test_parse_ok_plain_and_fenced():
-    assert parse_structured('{"status":"ok","translation":"你好"}') == "你好"
+    got = parse_structured('{"status":"ok","translation":"你好"}')
+    assert got.translation == "你好" and got.skipped is False
     fenced = '```json\n{"status":"ok","translation":"你好"}\n```'
-    assert parse_structured(fenced) == "你好"
+    assert parse_structured(fenced).translation == "你好"
     # missing status but translation present is accepted
-    assert parse_structured('{"translation":"只给了译文"}') == "只给了译文"
+    assert parse_structured('{"translation":"只给了译文"}').translation == "只给了译文"
 
 
 def test_refusal_never_returned():
@@ -40,3 +41,15 @@ def test_preview_partial_stream():
     escaped = '{"status":"ok","translation":"a\\nb\\t'
     assert preview_translation(escaped) == "a\nb\t"
     assert preview_translation('{"status":"ok"') == ""
+
+
+def test_parse_source_language_skip():
+    for raw in (
+        '{"status":"skip","translation":""}',
+        '{"status":"skipped","translation":""}',
+        '{"status":"unchanged","translation":""}',
+        '{"status":"ok","translation":"ignore me","skip":true}',
+        '{"status":"ok","unchanged":true}',
+    ):
+        got = parse_structured(raw)
+        assert got.skipped is True

@@ -56,9 +56,10 @@ class KeySlot:
 
 
 class ProgressUI:
-    def __init__(self, total: int, disable: bool = False) -> None:
+    def __init__(self, total: int, disable: bool = False, *, unit: str = "键") -> None:
         self.total = total
         self.disable = disable
+        self.unit = unit
         self._lock = threading.Lock()
         self._slot_count = 1 if disable else max_slots()
         self._free: list[int] = list(range(1, self._slot_count + 1))
@@ -68,7 +69,7 @@ class ProgressUI:
         self._overall = tqdm(
             total=self.total,
             desc="翻译",
-            unit="键",
+            unit=self.unit,
             position=0,
             leave=True,
             dynamic_ncols=True,
@@ -116,15 +117,21 @@ class ProgressUI:
                 self._free.append(position)
                 self._free.sort()
 
-    def tick(self, ok: bool) -> None:
+    def tick(self, ok: bool, *, skipped: bool = False) -> None:
         if self._overall is None:
             return
         with self._lock:
-            if ok:
-                self._overall.update(1)
-            else:
-                self._overall.update(1)
-                # Keep a running failure count in the postfix.
-                n = getattr(self, "_fails", 0) + 1
-                self._fails = n
-                self._overall.set_postfix_str(f"失败 {n}", refresh=True)
+            self._overall.update(1)
+            if skipped:
+                self._skips = getattr(self, "_skips", 0) + 1
+            elif not ok:
+                self._fails = getattr(self, "_fails", 0) + 1
+            bits: list[str] = []
+            nfail = getattr(self, "_fails", 0)
+            nskip = getattr(self, "_skips", 0)
+            if nfail:
+                bits.append(f"失败 {nfail}")
+            if nskip:
+                bits.append(f"跳过 {nskip}")
+            if bits:
+                self._overall.set_postfix_str("，".join(bits), refresh=True)

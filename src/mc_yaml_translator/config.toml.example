@@ -2,17 +2,31 @@
 # 第一次双击 exe 时，会把 exe 内置的这份示例写到 exe 同目录的 config.toml。
 # 编辑好后再把 .yml / .yaml 文件拖到 exe 上开始翻译。
 #
-# 目标语言、模型、限流等所有选项都在本文件中配置（不通过命令行设置）。
+# 目标语言、源语言、模型、限流等所有选项都在本文件中配置（不通过命令行设置）。
 # 不要把填好 api_key 的 config.toml 提交到 Git 或发给别人。
 #
 # 全部键翻译成功后窗口会自动关闭；任一键失败、或启动前配置/YAML 校验失败时，
-# 会列出原因并等待按键后再退出。
+# 会列出原因并等待按键后再退出。因原文不是指定源语言而跳过的，不算失败。
 
+# 源语言。写 auto（默认）让模型自己识别，所有自然语言都会翻。
+# 如果写成 en、zh_CN 这种具体语言，只有这种语言的句子会被翻，
+# 其他语言的原文原样保留，不算失败，摘要里会单独统计「跳过原文语言」。
+source_language = "auto"
+
+# 目标语言。可以写一个字符串，也可以写一个列表。
+# 单个字符串：行为和以前一样，进度条标题还是键名，
+#   输出 translated_messages.yml（同一目录，不会覆盖原文件），
+#   失败报告 translated_messages.failures.txt。
+# 列表（哪怕里面只有一项，也按列表模式处理）：每个键再按每种目标语言拆成一个小任务，
+#   进度条标题是「键 → 语言代码: 流式预览」，总进度按小任务计数，
+#   每种语言各写一个 translated_<语言代码>_原文件名，
+#   例如 messages.yml + ["zh_CN", "ja_JP"] →
+#     translated_zh_CN_messages.yml、translated_ja_JP_messages.yml，
+#   失败时对应写出 translated_zh_CN_messages.failures.txt，条目里带语言代码。
 target_language = "zh_CN"
-source_language = "en"
+# target_language = ["zh_CN", "ja_JP"]
 
-# 输出文件名：messages.yml → translated_messages.yml（同一目录，不会覆盖原文件）
-# 失败报告：translated_messages.failures.txt
+# 输出文件名前缀。列表模式下会变成 translated_<语言代码>_原文件名。
 output_prefix = "translated_"
 
 # 每个模型的额外重试次数（总尝试次数 = 1 + retries）
@@ -32,8 +46,8 @@ verify_ssl = true
 
 # ---------------------------------------------------------------------------
 # 模型降级链：按书写顺序尝试。某一个模型失败会降级到下一个；
-# 降级本身不算失败。只有链上所有模型都失败，该键才算翻译失败
-#（保留原文，并写入 translated_<原名>.failures.txt）。
+# 降级本身不算失败。只有链上所有模型都失败，该键（或该语言的小任务）才算翻译失败
+#（保留原文，并写入失败报告）。
 #
 # 每个模型必填：base_url、api_key、model
 # 可选限流：max_streams、qps、qpm。写 0 表示该项不限制（省略该键同样不限制）。
