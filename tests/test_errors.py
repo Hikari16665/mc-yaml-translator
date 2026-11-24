@@ -73,17 +73,20 @@ def test_network_and_config_errors():
 
 
 def test_openai_exception_mapping():
+    import httpx
     import openai
 
-    assert classify_error(openai.APITimeoutError(request=None)) is ErrorCategory.NETWORK
-    assert classify_error(openai.APIConnectionError(request=None)) is ErrorCategory.NETWORK
+    # Newer openai SDKs refuse request=None when constructing API errors.
+    req = httpx.Request("POST", "http://example.com/v1/chat/completions")
+    assert classify_error(openai.APITimeoutError(request=req)) is ErrorCategory.NETWORK
+    assert classify_error(openai.APIConnectionError(request=req)) is ErrorCategory.NETWORK
 
     # Status errors need a mock response
     class _Resp:
         def __init__(self, status):
             self.status_code = status
             self.headers = {}
-            self.request = None
+            self.request = req
 
         def json(self):
             return {"error": {"message": "x"}}
