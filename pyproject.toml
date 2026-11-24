@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mc-yaml-translator"
-version = "0.2.0"
+version = "0.2.1"
 description = "Translate Minecraft plugin YAML language/config files with a model failover chain."
 readme = "README.md"
 license = "MIT"

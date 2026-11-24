@@ -41,6 +41,8 @@ mc-yaml-translator.exe --config D:\path\config.toml --scan messages.yml
 
 模型按 `[[models]]` 提供的顺序使用，依次降级，某个模型不行（重试也用尽了）就换下一个，降级重试成功了也可以。全部走不通就算翻译失败，仍会输出文件，并附失败报告。单目标时是 `translated_messages.failures.txt`，列表模式则是 `translated_zh_CN_messages.failures.txt` 这种。  
 
+请求默认会带 `response_format=json_object`，让模型按固定 JSON 回来。要是这个模型或中转不认这个参数、回了 400，会在同一个模型上自动去掉再试一次，这次不算失败。要是去掉以后还是 400，失败报告里会带上服务商返回的原文，方便看出真正原因。  
+
 每个模型必填 `base_url`，`api_key`，和`model`。配置检查如果失败，开始翻译前会报 `CLIENT-CONFIG`错误。  
 
 目前支持限流方式： `max_streams`（同时多少路流式请求），`qpm`（60 秒滚动窗口内限制请求数），`qps`（每秒几个请求）。写0不限制，三个限制可同时生效，按max_streams, qpm, qps顺序限制并发。  
@@ -64,8 +66,8 @@ mc-yaml-translator.exe --config D:\path\config.toml --scan messages.yml
 
 ## 错误代号
 `NETWORK`：不可达或超时。  
-`PROVIDER`：被限流，模型拒绝，验证失败。  
-`CLIENT-CONFIG`：密钥、地址、配置缺省或错误。  
+`PROVIDER`：被限流，模型拒绝，验证失败，或者模型/接口不接受某个参数（比如不支持 `response_format`）。  
+`CLIENT-CONFIG`：密钥、地址、配置缺省或错误。HTTP 401/403 也算这类；单纯的「不支持某个参数」不会再标成配置错误。  
 
 ## 从源码运行
 

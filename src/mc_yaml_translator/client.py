@@ -20,6 +20,8 @@ from mc_yaml_translator.errors import (
     RefusalError,
     TranslateError,
     classify_error,
+    error_body_from_exc,
+    should_retry_without_response_format,
 )
 
 # Re-export so existing imports from client continue to work.
@@ -233,12 +235,12 @@ def _wrap_openai(exc: Exception) -> TranslateError:
     """Map an OpenAI SDK exception to a categorized TranslateError."""
     if isinstance(exc, TranslateError):
         return exc
-    status = getattr(exc, "status_code", None)
-    body = ""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
     try:
-        body = str(getattr(exc, "body", "") or exc)
-    except Exception:
-        body = str(exc)
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    body = error_body_from_exc(exc)
     if isinstance(status, int) and status >= 400:
         return HTTPStatusError(status, body)
     category = classify_error(exc)
@@ -304,7 +306,10 @@ class ModelClient:
         try:
             raw = await self._stream(model, source_text, on_delta, use_format=want_fmt, target_language=target)
         except HTTPStatusError as exc:
-            if want_fmt and exc.status == 400:
+            # Many non-DeepSeek models/gateways reject response_format=json_object
+            # with 400 (or an equivalent "unsupported parameter" 404/422). Drop it
+            # once on the same model; this is not itself a failure.
+            if want_fmt and should_retry_without_response_format(exc.status, exc.body):
                 self._response_format_ok[key] = False
                 raw = await self._stream(
                     model, source_text, on_delta, use_format=False, target_language=target
@@ -350,9 +355,5 @@ class ModelClient:
             return "".join(parts)
         except HTTPStatusError:
             raise
-        except openai.BadRequestError as exc:
-            if use_format:
-                raise HTTPStatusError(400, str(exc)) from exc
-            raise _wrap_openai(exc) from exc
         except (openai.APITimeoutError, openai.APIConnectionError, openai.APIStatusError, openai.APIError) as exc:
             raise _wrap_openai(exc) from exc

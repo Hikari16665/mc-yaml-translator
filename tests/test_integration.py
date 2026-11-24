@@ -229,3 +229,112 @@ async def test_network_error_category(tmp_path: Path):
     result = await translate_document(src, cfg, disable_progress=True)
     assert result.failed
     assert any(a.category.value == "NETWORK" for a in result.failed[0].attempts)
+
+@pytest.mark.asyncio
+async def test_response_format_400_retries_same_model_without_format(tmp_path: Path):
+    """A 400 caused by json_object is retried once without it; not a failure."""
+    src = tmp_path / "m.yml"
+    src.write_text(
+        'hello: "A full greeting sentence here"\n'
+        'bye: "A second full greeting sentence"\n',
+        encoding="utf-8",
+    )
+
+    def handler(body, headers):
+        if body.get("response_format"):
+            return 400, {
+                "error": {
+                    "message": "This model does not support response_format type json_object",
+                    "type": "invalid_request_error",
+                }
+            }
+        src_text = _user_text(body)
+        return 200, ok_payload("译:" + src_text)
+
+    with MockOpenAI(handler) as srv:
+        cfg = parse_config(
+            {
+                "target_language": "zh_CN",
+                "source_language": "en",
+                "retries": 0,
+                "timeout_seconds": 10,
+                "models": [
+                    {
+                        "base_url": srv.base_url,
+                        "api_key": "sk-test",
+                        "model": "test-model",
+                        "max_streams": 1,
+                    }
+                ],
+            }
+        )
+        result = await translate_document(src, cfg, disable_progress=True)
+        requests = list(srv.requests)
+
+    assert result.failed == []
+    assert result.translated >= 2
+    # First in-flight key: one 400 with format, then success without.
+    # Later keys should remember the flag and skip format entirely.
+    with_fmt = [r for r in requests if r["body"].get("response_format")]
+    without_fmt = [r for r in requests if "response_format" not in r["body"]]
+    assert len(with_fmt) == 1
+    assert len(without_fmt) >= 2
+    assert with_fmt[0]["body"]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_real_client_400_surfaces_body_and_is_still_a_failure(tmp_path: Path):
+    src = tmp_path / "m.yml"
+    src.write_text('hello: "A full greeting sentence that should fail"\n', encoding="utf-8")
+
+    def handler(body, headers):
+        return 400, {"error": {"message": "Invalid model specified: nope"}}
+
+    with MockOpenAI(handler) as srv:
+        cfg = parse_config(
+            {
+                "target_language": "zh_CN",
+                "source_language": "en",
+                "retries": 0,
+                "timeout_seconds": 10,
+                "models": [{"base_url": srv.base_url, "api_key": "sk-test", "model": "test-model"}],
+            }
+        )
+        result = await translate_document(src, cfg, disable_progress=True)
+        n_requests = len(srv.requests)
+
+    assert result.failed
+    # One attempt sent with format, same-model retry without format, both 400.
+    # retries=0 so that is the only recorded attempt.
+    assert n_requests == 2
+    attempt = result.failed[0].attempts[0]
+    assert attempt.category.value == "CLIENT-CONFIG"
+    assert "HTTP 400" in attempt.message
+    assert "Invalid model specified: nope" in attempt.message
+    # The format-drop retry is internal: only one recorded attempt.
+    assert len(result.failed[0].attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_unsupported_param_400_without_successful_retry_is_provider(tmp_path: Path):
+    src = tmp_path / "m.yml"
+    src.write_text('hello: "A full greeting sentence that should fail"\n', encoding="utf-8")
+
+    def handler(body, headers):
+        # Even after dropping response_format, the provider still 400s with the
+        # original unsupported-param wording (e.g. a gateway that always says this).
+        return 400, {
+            "error": {
+                "message": "Unknown parameter: 'response_format'",
+                "type": "invalid_request_error",
+            }
+        }
+
+    with MockOpenAI(handler) as srv:
+        cfg = _cfg(srv.base_url, retries=0)
+        result = await translate_document(src, cfg, disable_progress=True)
+
+    assert result.failed
+    attempt = result.failed[0].attempts[0]
+    assert attempt.category.value == "PROVIDER"
+    assert "response_format" in attempt.message
