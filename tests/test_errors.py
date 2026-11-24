@@ -73,39 +73,37 @@ def test_network_and_config_errors():
 
 
 def test_openai_exception_mapping():
+    import json
+
     import httpx
     import openai
 
-    # Newer openai SDKs refuse request=None when constructing API errors.
+    # openai 3.59+ validates request/response objects; use real httpx types.
     req = httpx.Request("POST", "http://example.com/v1/chat/completions")
+
+    def _resp(status: int, payload=None) -> httpx.Response:
+        body = payload if payload is not None else {"error": {"message": "x"}}
+        return httpx.Response(
+            status,
+            request=req,
+            headers={"Content-Type": "application/json"},
+            content=json.dumps(body).encode("utf-8"),
+        )
+
     assert classify_error(openai.APITimeoutError(request=req)) is ErrorCategory.NETWORK
     assert classify_error(openai.APIConnectionError(request=req)) is ErrorCategory.NETWORK
 
-    # Status errors need a mock response
-    class _Resp:
-        def __init__(self, status):
-            self.status_code = status
-            self.headers = {}
-            self.request = req
-
-        def json(self):
-            return {"error": {"message": "x"}}
-
-        @property
-        def text(self):
-            return '{"error":{"message":"x"}}'
-
-    auth = openai.AuthenticationError("nope", response=_Resp(401), body=None)
+    auth = openai.AuthenticationError("nope", response=_resp(401), body=None)
     assert classify_error(auth) is ErrorCategory.CLIENT_CONFIG
-    rate = openai.RateLimitError("slow", response=_Resp(429), body=None)
+    rate = openai.RateLimitError("slow", response=_resp(429), body=None)
     assert classify_error(rate) is ErrorCategory.PROVIDER
-    boom = openai.InternalServerError("boom", response=_Resp(500), body=None)
+    boom = openai.InternalServerError("boom", response=_resp(500), body=None)
     assert classify_error(boom) is ErrorCategory.PROVIDER
 
     bad_body = {"error": {"message": "Unknown parameter: 'response_format'"}}
     bad = openai.BadRequestError(
         "unknown param",
-        response=_Resp(400),
+        response=_resp(400, bad_body),
         body=bad_body,
     )
     assert classify_error(bad) is ErrorCategory.PROVIDER
@@ -113,7 +111,7 @@ def test_openai_exception_mapping():
     model_body = {"error": {"message": "The model `foo` does not exist"}}
     bad_model = openai.BadRequestError(
         "no model",
-        response=_Resp(400),
+        response=_resp(400, model_body),
         body=model_body,
     )
     assert classify_error(bad_model) is ErrorCategory.CLIENT_CONFIG
